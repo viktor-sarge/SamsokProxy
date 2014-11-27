@@ -1,4 +1,7 @@
 """ Module for acting as a proxy for fetching contents of a url """
+
+# Based on this module with some modifications: https://github.com/aymanfarhat/proxypy
+
 import urllib2
 import json
 import urlparse
