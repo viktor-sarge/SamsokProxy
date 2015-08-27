@@ -35,9 +35,6 @@ def get(qstring):
     if "url" in args and _validateUrl(args["url"]):
         reply["status"]["url"] = args["url"]
 
-        if not args["url"].startswith("http://"):
-            args["url"] = "http://"+args["url"]
-
         req = urllib2.Request(args["url"])
 
         try:
