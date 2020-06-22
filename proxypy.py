@@ -6,6 +6,8 @@ import urllib2
 import json
 import urlparse
 import re
+from cookielib import CookieJar
+
 
 def _validateUrl(urlstr):
     pattern = re.compile(
@@ -35,10 +37,11 @@ def get(qstring):
     if "url" in args and _validateUrl(args["url"]):
         reply["status"]["url"] = args["url"]
 
-        req = urllib2.Request(args["url"])
+        cj = CookieJar()
+        opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj))
 
         try:
-            response = urllib2.urlopen(req, timeout = 20)
+            response = opener.open(args["url"], timeout=20)
             reply["content"] = response.read()
             reply["status"]["http_code"] = response.code
 
