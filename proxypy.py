@@ -7,7 +7,8 @@ import json
 import urlparse
 import re
 from cookielib import CookieJar
-
+import codecs
+import pickle
 
 def _validateUrl(urlstr):
     pattern = re.compile(
@@ -35,18 +36,27 @@ def get(qstring):
     reply["status"] = {}
 
     if "url" in args and _validateUrl(args["url"]):
-        reply["status"]["url"] = args["url"]
+        url  = args["url"]
+        reply["status"]["url"] = url
 
         cj = CookieJar()
-        opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj))
+
+        if "cookies" in args:
+            cookies = pickle.loads(codecs.decode(args["cookies"].encode(), "base64"))
+            for c in cookies:
+                cj.set_cookie(c)
+
+        opener = urllib2.build_opener(urllib2.HTTPRedirectHandler(), urllib2.HTTPHandler(debuglevel=0), urllib2.HTTPSHandler(debuglevel=0), urllib2.HTTPCookieProcessor(cj))
 
         try:
-            response = opener.open(args["url"], timeout=20)
+            response = opener.open(url, timeout=20)
             reply["content"] = response.read()
             reply["status"]["http_code"] = response.code
 
             if "headers" in args and args["headers"] == "true":
                 reply["headers"] = dict(response.info())
+
+            reply["cookies"] = codecs.encode(pickle.dumps([c for c in cj]), "base64").decode()
 
         except (urllib2.HTTPError, urllib2.URLError) as e:
             reply["status"]["reason"] = str(e.reason)
