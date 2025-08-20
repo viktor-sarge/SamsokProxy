@@ -80,10 +80,49 @@ def get(qstring):
                                                urllib.request.HTTPCookieProcessor(cj))
 
         try:
-            response = opener.open(url, timeout=20)
+            # Determine HTTP method (default to GET for backwards compatibility)
+            method = args.get("method", "GET").upper()
+            
+            # Prepare request data and headers
+            request_data = None
+            content_type = None
+            
+            if method == "POST":
+                # Handle POST data
+                if "postData" in args:
+                    request_data = args["postData"].encode('utf-8')
+                
+                # Handle content type
+                if "contentType" in args:
+                    content_type = args["contentType"]
+                else:
+                    content_type = "application/x-www-form-urlencoded"
+            
+            # Create the request object
+            req = urllib.request.Request(url, data=request_data, method=method)
+            
+            # Add content type header for POST requests
+            if method == "POST" and content_type:
+                req.add_header('Content-Type', content_type)
+            
+            # Handle custom headers
+            if "headers" in args and args["headers"] != "true":
+                try:
+                    custom_headers = json.loads(args["headers"])
+                    for header_name, header_value in custom_headers.items():
+                        # Skip headers that urllib handles automatically or that cause issues
+                        if header_name.lower() not in ['content-length', 'connection', 'host']:
+                            req.add_header(header_name, header_value)
+                except (json.JSONDecodeError, TypeError):
+                    # If headers can't be parsed, ignore them
+                    pass
+            
+            # Make the request
+            response = opener.open(req, timeout=20)
             reply["content"] = response.read().decode('utf-8', errors='ignore')
             reply["status"]["http_code"] = response.code
 
+            # Return response headers if requested
             if "headers" in args and args["headers"] == "true":
                 reply["headers"] = dict(response.info())
 
