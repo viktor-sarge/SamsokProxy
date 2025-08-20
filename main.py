@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3.12
 # coding=utf-8
 #
 # Copyright 2007 Google Inc.
@@ -15,28 +15,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-import webapp2
+from flask import Flask, request, Response
 import proxypy
 
+app = Flask(__name__)
 
-class MainHandler(webapp2.RequestHandler):
-    def get(self):
-        self.response.write('Samsökning cross domain proxy!')
+@app.route('/')
+def main_handler():
+    return 'Samsökning cross domain proxy!'
 
-class CrossdomainHandler(webapp2.RequestHandler):
-    def get(self):
-        reply = proxypy.get(self.request.query_string)
-        self.response.headers['Content-Type'] = "application/json"
-        self.response.write(reply)
-
-app = webapp2.WSGIApplication([
-    ('/', MainHandler),
-    ('/crossdomain', CrossdomainHandler)
-], debug=True)
-
-def main():
-    from paste import httpserver
-    httpserver.serve(app, host='127.0.0.1', port='8080')
+@app.route('/crossdomain')
+def crossdomain_handler():
+    reply = proxypy.get(request.query_string.decode('utf-8'))
+    return Response(reply, content_type='application/json')
 
 if __name__ == '__main__':
-    main()
+    # For local testing
+    app.run(host='127.0.0.1', port=8080, debug=True)

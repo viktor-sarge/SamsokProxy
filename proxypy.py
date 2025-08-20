@@ -1,14 +1,18 @@
 """ Module for acting as a proxy for fetching contents of a url """
 
 # Based on this module with some modifications: https://github.com/aymanfarhat/proxypy
+# Updated for Python 3 compatibility
 
-import urllib2
+import urllib.request
+import urllib.parse
+import urllib.error
 import json
-import urlparse
 import re
-from cookielib import CookieJar
+from http.cookiejar import CookieJar
 import codecs
 import pickle
+import base64
+import ssl
 
 def _validateUrl(urlstr):
     pattern = re.compile(
@@ -29,7 +33,7 @@ def _validateUrl(urlstr):
 
 def get(qstring):
     """ Builds and returns a JSON reply of all information and requested data """
-    args = dict(urlparse.parse_qsl(qstring))
+    args = dict(urllib.parse.parse_qsl(qstring))
 
     reply = {}
     reply["headers"] = {}
@@ -41,25 +45,52 @@ def get(qstring):
 
         cj = CookieJar()
 
+        # Handle cookies - support both legacy and plain string formats
+        use_cookie_header = False
+        cookie_header_value = None
+        
         if "cookies" in args:
-            cookies = pickle.loads(codecs.decode(args["cookies"].encode(), "base64"))
-            for c in cookies:
-                cj.set_cookie(c)
+            try:
+                # Try legacy format first (backwards compatibility)
+                cookies = pickle.loads(base64.b64decode(args["cookies"]))
+                for c in cookies:
+                    cj.set_cookie(c)
+            except:
+                # Fall back to plain cookie string format
+                cookie_header_value = args["cookies"]
+                use_cookie_header = True
 
-        opener = urllib2.build_opener(urllib2.HTTPRedirectHandler(), urllib2.HTTPHandler(debuglevel=0), urllib2.HTTPSHandler(debuglevel=0), urllib2.HTTPCookieProcessor(cj))
+        # Create SSL context that doesn't verify certificates (for local testing)
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # Build opener based on cookie format
+        if use_cookie_header and cookie_header_value:
+            # For plain cookie strings, add as header
+            opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler(), 
+                                               urllib.request.HTTPHandler(debuglevel=0), 
+                                               urllib.request.HTTPSHandler(debuglevel=0, context=ssl_context))
+            opener.addheaders = [('Cookie', cookie_header_value)]
+        else:
+            # For legacy format or no cookies, use cookie processor
+            opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler(), 
+                                               urllib.request.HTTPHandler(debuglevel=0), 
+                                               urllib.request.HTTPSHandler(debuglevel=0, context=ssl_context), 
+                                               urllib.request.HTTPCookieProcessor(cj))
 
         try:
             response = opener.open(url, timeout=20)
-            reply["content"] = response.read()
+            reply["content"] = response.read().decode('utf-8', errors='ignore')
             reply["status"]["http_code"] = response.code
 
             if "headers" in args and args["headers"] == "true":
                 reply["headers"] = dict(response.info())
 
-            reply["cookies"] = codecs.encode(pickle.dumps([c for c in cj]), "base64").decode()
+            reply["cookies"] = base64.b64encode(pickle.dumps([c for c in cj])).decode()
 
-        except (urllib2.HTTPError, urllib2.URLError) as e:
-            reply["status"]["reason"] = str(e.reason)
+        except (urllib.error.HTTPError, urllib.error.URLError) as e:
+            reply["status"]["reason"] = str(e.reason) if hasattr(e, 'reason') else str(e)
             reply["content"] = None
             reply["status"]["http_code"] = e.code if hasattr(e,'code') else 0
     else:
@@ -74,6 +105,6 @@ def get(qstring):
 
     # Attach callback to reply if jsonp request
     if "callback" in args:
-        return "{0}({1})".format(args["callback"], json.dumps(reply, encoding = encoding))
+        return "{0}({1})".format(args["callback"], json.dumps(reply, ensure_ascii=False))
 
-    return json.dumps(reply, encoding = encoding)
+    return json.dumps(reply, ensure_ascii=False)
