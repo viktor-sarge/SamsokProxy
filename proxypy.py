@@ -15,6 +15,9 @@ import base64
 import ssl
 import gzip
 import io
+import logging
+
+logger = logging.getLogger(__name__)
 
 def _validateUrl(urlstr):
     pattern = re.compile(
@@ -44,6 +47,14 @@ def get(qstring):
     if "url" in args and _validateUrl(args["url"]):
         url  = args["url"]
         reply["status"]["url"] = url
+        
+        logger.info('Processing proxy request', extra={
+            'event': 'proxy_request_start',
+            'url': url,
+            'method': args.get('method', 'GET'),
+            'has_cookies': 'cookies' in args,
+            'has_custom_headers': 'headers' in args and args['headers'] != 'true'
+        })
 
         cj = CookieJar()
 
@@ -57,10 +68,14 @@ def get(qstring):
                 cookies = pickle.loads(base64.b64decode(args["cookies"]))
                 for c in cookies:
                     cj.set_cookie(c)
-            except:
+                logger.debug('Using legacy cookie format')
+            except Exception as e:
                 # Fall back to plain cookie string format
                 cookie_header_value = args["cookies"]
                 use_cookie_header = True
+                logger.debug('Using plain cookie string format', extra={
+                    'cookie_parse_error': str(e)
+                })
 
         # Create SSL context that doesn't verify certificates (for local testing)
         ssl_context = ssl.create_default_context()
@@ -124,23 +139,31 @@ def get(qstring):
             
             # Read the raw response
             raw_content = response.read()
+            content_encoding = response.headers.get('content-encoding')
             
             # Handle compressed responses automatically
             try:
                 # Check if the response is gzip compressed
-                if response.headers.get('content-encoding') == 'gzip':
+                if content_encoding == 'gzip':
                     content = gzip.decompress(raw_content).decode('utf-8', errors='ignore')
-                elif response.headers.get('content-encoding') == 'deflate':
+                    logger.debug('Decompressed gzip response')
+                elif content_encoding == 'deflate':
                     import zlib
                     content = zlib.decompress(raw_content).decode('utf-8', errors='ignore')
-                elif response.headers.get('content-encoding') == 'br':
+                    logger.debug('Decompressed deflate response')
+                elif content_encoding == 'br':
                     import brotli
                     content = brotli.decompress(raw_content).decode('utf-8', errors='ignore')
+                    logger.debug('Decompressed brotli response')
                 else:
                     content = raw_content.decode('utf-8', errors='ignore')
-            except Exception:
+            except Exception as e:
                 # If decompression fails, try as plain text
                 content = raw_content.decode('utf-8', errors='ignore')
+                logger.warning('Failed to decompress response, using as plain text', extra={
+                    'content_encoding': content_encoding,
+                    'decompression_error': str(e)
+                })
             
             reply["content"] = content
             reply["status"]["http_code"] = response.code
@@ -150,15 +173,41 @@ def get(qstring):
                 reply["headers"] = dict(response.info())
 
             reply["cookies"] = base64.b64encode(pickle.dumps([c for c in cj])).decode()
+            
+            logger.info('Proxy request completed successfully', extra={
+                'event': 'proxy_success',
+                'url': url,
+                'status_code': response.code,
+                'content_length': len(content),
+                'content_encoding': content_encoding
+            })
 
         except (urllib.error.HTTPError, urllib.error.URLError) as e:
-            reply["status"]["reason"] = str(e.reason) if hasattr(e, 'reason') else str(e)
+            error_code = e.code if hasattr(e, 'code') else 0
+            error_reason = str(e.reason) if hasattr(e, 'reason') else str(e)
+            
+            reply["status"]["reason"] = error_reason
             reply["content"] = None
-            reply["status"]["http_code"] = e.code if hasattr(e,'code') else 0
+            reply["status"]["http_code"] = error_code
+            
+            logger.error('Proxy request failed', extra={
+                'event': 'proxy_error',
+                'url': url,
+                'error_type': type(e).__name__,
+                'error_code': error_code,
+                'error_reason': error_reason
+            }, exc_info=True)
     else:
+        provided_url = args.get("url", "")
         reply["content"] = None
         reply["status"]["http_code"] = 400
         reply["status"]["reason"] = "The url parameter value is missing or invalid"
+        
+        logger.warning('URL validation failed', extra={
+            'event': 'validation_error',
+            'provided_url': provided_url,
+            'reason': 'URL missing or invalid format'
+        })
 
     if "encoding" in args:
         encoding = args["encoding"]

@@ -15,10 +15,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
+import logging
 from flask import Flask, request, Response
 import proxypy
+from logging_config import setup_logging
+
+# Configure structured logging
+setup_logging()
 
 app = Flask(__name__)
+logger = logging.getLogger(__name__)
 
 @app.route('/')
 def main_handler():
@@ -26,8 +32,28 @@ def main_handler():
 
 @app.route('/crossdomain')
 def crossdomain_handler():
-    reply = proxypy.get(request.query_string.decode('utf-8'))
-    return Response(reply, content_type='application/json')
+    query_string = request.query_string.decode('utf-8')
+    logger.info('Crossdomain request received', extra={
+        'event': 'crossdomain_request',
+        'query_string': query_string,
+        'remote_addr': request.remote_addr,
+        'user_agent': request.headers.get('User-Agent')
+    })
+    
+    try:
+        reply = proxypy.get(query_string)
+        logger.info('Crossdomain request completed successfully')
+        return Response(reply, content_type='application/json')
+    except Exception as e:
+        logger.error('Crossdomain request failed', extra={
+            'event': 'crossdomain_error',
+            'query_string': query_string,
+            'error_type': type(e).__name__,
+            'error_message': str(e)
+        }, exc_info=True)
+        # Return error response
+        error_reply = '{"status": {"http_code": 500, "reason": "Internal server error"}, "content": null}'
+        return Response(error_reply, content_type='application/json', status=500)
 
 if __name__ == '__main__':
     # For local testing
