@@ -13,6 +13,8 @@ import codecs
 import pickle
 import base64
 import ssl
+import gzip
+import io
 
 def _validateUrl(urlstr):
     pattern = re.compile(
@@ -119,7 +121,28 @@ def get(qstring):
             
             # Make the request
             response = opener.open(req, timeout=20)
-            reply["content"] = response.read().decode('utf-8', errors='ignore')
+            
+            # Read the raw response
+            raw_content = response.read()
+            
+            # Handle compressed responses automatically
+            try:
+                # Check if the response is gzip compressed
+                if response.headers.get('content-encoding') == 'gzip':
+                    content = gzip.decompress(raw_content).decode('utf-8', errors='ignore')
+                elif response.headers.get('content-encoding') == 'deflate':
+                    import zlib
+                    content = zlib.decompress(raw_content).decode('utf-8', errors='ignore')
+                elif response.headers.get('content-encoding') == 'br':
+                    import brotli
+                    content = brotli.decompress(raw_content).decode('utf-8', errors='ignore')
+                else:
+                    content = raw_content.decode('utf-8', errors='ignore')
+            except Exception:
+                # If decompression fails, try as plain text
+                content = raw_content.decode('utf-8', errors='ignore')
+            
+            reply["content"] = content
             reply["status"]["http_code"] = response.code
 
             # Return response headers if requested
