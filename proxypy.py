@@ -134,8 +134,36 @@ def get(qstring):
                     # If headers can't be parsed, ignore them
                     pass
             
-            # Make the request
-            response = opener.open(req, timeout=20)
+            # Check if this URL needs static proxy (for blocked domains)
+            from static_proxy_manager import get_static_proxy_manager
+            
+            static_proxy = get_static_proxy_manager()
+            
+            if static_proxy.should_use_proxy(url):
+                logger.info('URL requires static proxy', extra={
+                    'event': 'static_proxy_required',
+                    'url': url
+                })
+                
+                try:
+                    # Use static proxy for blocked domains
+                    response = static_proxy.make_request(req, timeout=20)
+                    logger.info('Request completed via static proxy', extra={
+                        'event': 'static_proxy_success',
+                        'url': url,
+                        'proxy_host': static_proxy.proxy_host
+                    })
+                except Exception as e:
+                    logger.error('Static proxy failed, falling back to direct request', extra={
+                        'event': 'static_proxy_fallback',
+                        'url': url,
+                        'error': str(e)
+                    })
+                    # Fall back to direct request
+                    response = opener.open(req, timeout=20)
+            else:
+                # Make the request normally for non-blocked domains
+                response = opener.open(req, timeout=20)
             
             # Read the raw response
             raw_content = response.read()
