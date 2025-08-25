@@ -145,6 +145,11 @@ def get(qstring):
                     'url': url
                 })
                 
+                # Add cookie header to request if we have cookies
+                if use_cookie_header and cookie_header_value:
+                    req.add_header('Cookie', cookie_header_value)
+                    logger.debug('Added Cookie header to static proxy request')
+                
                 try:
                     # Use static proxy for blocked domains
                     response = static_proxy.make_request(req, timeout=20)
