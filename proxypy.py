@@ -46,15 +46,17 @@ def get(qstring):
 
     if "url" in args and _validateUrl(args["url"]):
         url  = args["url"]
-        reply["status"]["url"] = url
+        original_url = url
         
         logger.info('Processing proxy request', extra={
             'event': 'proxy_request_start',
-            'url': url,
+            'url': original_url,
             'method': args.get('method', 'GET'),
             'has_cookies': 'cookies' in args,
             'has_custom_headers': 'headers' in args and args['headers'] != 'true'
         })
+
+        reply["status"]["url"] = original_url
 
         cj = CookieJar()
 
@@ -117,6 +119,10 @@ def get(qstring):
             
             # Create the request object
             req = urllib.request.Request(url, data=request_data, method=method)
+
+            # Ensure we always send a reasonable User-Agent (some providers block default urllib)
+            if not req.has_header('User-Agent'):
+                req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
             
             # Add content type header for POST requests
             if method == "POST" and content_type:
@@ -150,22 +156,101 @@ def get(qstring):
                     req.add_header('Cookie', cookie_header_value)
                     logger.debug('Added Cookie header to static proxy request')
                 
+                def _attempt_gotlib_handshake() -> urllib.request.addinfourl:
+                    """Perform Göteborg request by emulating Encore CAS redirect flow"""
+                    headers = {name: value for name, value in req.header_items()}
+                    if 'User-Agent' not in headers:
+                        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+
+                    current_url = url
+                    max_redirects = 6
+
+                    for attempt in range(max_redirects):
+                        head_req = urllib.request.Request(current_url, method='HEAD')
+                        for header_name, header_value in headers.items():
+                            head_req.add_header(header_name, header_value)
+
+                        try:
+                            # Expect redirect chain without automatically following
+                            static_proxy.make_request(
+                                head_req,
+                                timeout=20,
+                                cookie_jar=cj,
+                                allow_redirects=False
+                            )
+                            # No redirect, break and fetch current URL directly
+                            break
+                        except urllib.error.HTTPError as redirect_error:
+                            if redirect_error.code not in (301, 302, 303, 307, 308):
+                                raise
+
+                            location = redirect_error.headers.get('Location')
+                            if not location:
+                                raise RuntimeError('Göteborg redirect missing Location header')
+
+                            resolved_location = urllib.parse.urljoin(current_url, location)
+                            parsed = urllib.parse.urlparse(resolved_location)
+                            target_values = urllib.parse.parse_qs(parsed.query).get('url')
+
+                            if target_values:
+                                target_url = target_values[0]
+                                follow_req = urllib.request.Request(target_url)
+                                for header_name, header_value in headers.items():
+                                    follow_req.add_header(header_name, header_value)
+
+                                return static_proxy.make_request(
+                                    follow_req,
+                                    timeout=20,
+                                    cookie_jar=cj
+                                )
+
+                            # No CAS target in redirect – treat as intermediate hop (e.g., http -> https)
+                            current_url = resolved_location
+                    else:
+                        raise RuntimeError('Göteborg redirect chain exceeded maximum depth')
+
+                    follow_req = urllib.request.Request(current_url)
+                    for header_name, header_value in headers.items():
+                        follow_req.add_header(header_name, header_value)
+
+                    return static_proxy.make_request(
+                        follow_req,
+                        timeout=20,
+                        cookie_jar=cj
+                    )
+
+                gotlib_domain = 'gotlib.goteborg.se'
+
                 try:
-                    # Use static proxy for blocked domains
-                    response = static_proxy.make_request(req, timeout=20)
-                    logger.info('Request completed via static proxy', extra={
-                        'event': 'static_proxy_success',
-                        'url': url,
-                        'proxy_host': static_proxy.proxy_host
-                    })
+                    if gotlib_domain in url:
+                        logger.info('Göteborg request routed via static proxy handshake', extra={
+                            'event': 'static_proxy_gotlib_handshake',
+                            'url': url
+                        })
+                        response = _attempt_gotlib_handshake()
+                        logger.info('Göteborg handshake completed via static proxy', extra={
+                            'event': 'static_proxy_gotlib_success',
+                            'url': url
+                        })
+                    else:
+                        # Use static proxy for other blocked domains
+                        response = static_proxy.make_request(
+                            req,
+                            timeout=20,
+                            cookie_jar=cj
+                        )
+                        logger.info('Request completed via static proxy', extra={
+                            'event': 'static_proxy_success',
+                            'url': url,
+                            'proxy_host': static_proxy.proxy_host
+                        })
                 except Exception as e:
-                    logger.error('Static proxy failed, falling back to direct request', extra={
-                        'event': 'static_proxy_fallback',
+                    logger.error('Static proxy failed', extra={
+                        'event': 'static_proxy_failure',
                         'url': url,
                         'error': str(e)
-                    })
-                    # Fall back to direct request
-                    response = opener.open(req, timeout=20)
+                    }, exc_info=True)
+                    raise
             else:
                 # Make the request normally for non-blocked domains
                 response = opener.open(req, timeout=20)

@@ -9,11 +9,19 @@ import urllib.error
 import logging
 import os
 import ssl
+from http.cookiejar import CookieJar
 
 # Load environment variables from .env file (development) or system (production)
 import env_loader
 
 logger = logging.getLogger(__name__)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Helper handler that prevents automatic redirect following"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # pragma: no cover - thin wrapper
+        return None
 
 class StaticProxyManager:
     """Manages a single static residential proxy for blocked domains"""
@@ -54,7 +62,7 @@ class StaticProxyManager:
         
         return False
     
-    def build_proxy_opener(self):
+    def build_proxy_opener(self, cookie_jar: CookieJar | None = None, allow_redirects: bool = True):
         """Build urllib opener configured with the static proxy"""
         if not self.is_configured():
             raise ValueError("Static proxy not configured")
@@ -84,17 +92,33 @@ class StaticProxyManager:
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
         
-        # Build opener
-        opener = urllib.request.build_opener(
+        # Build opener with redirect and optional cookie support
+        handlers = [
             proxy_handler,
             auth_handler,
             urllib.request.HTTPHandler(),
             urllib.request.HTTPSHandler(context=ssl_context)
-        )
+        ]
+
+        if allow_redirects:
+            handlers.append(urllib.request.HTTPRedirectHandler())
+        else:
+            handlers.append(_NoRedirectHandler())
+
+        if cookie_jar is not None:
+            handlers.append(urllib.request.HTTPCookieProcessor(cookie_jar))
+
+        opener = urllib.request.build_opener(*handlers)
         
         return opener
     
-    def make_request(self, req: urllib.request.Request, timeout: int = 20):
+    def make_request(
+        self,
+        req: urllib.request.Request,
+        timeout: int = 20,
+        cookie_jar: CookieJar | None = None,
+        allow_redirects: bool = True
+    ):
         """Make request through the static proxy"""
         if not self.is_configured():
             raise ValueError("Static proxy not configured")
@@ -102,13 +126,23 @@ class StaticProxyManager:
         logger.info(f"Making request through static proxy: {self.proxy_host}:{self.proxy_port}")
         
         try:
-            opener = self.build_proxy_opener()
+            opener = self.build_proxy_opener(cookie_jar=cookie_jar, allow_redirects=allow_redirects)
             response = opener.open(req, timeout=timeout)
             
             logger.info("Static proxy request successful")
             return response
             
         except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308):
+                logger.info(
+                    "Static proxy received redirect",
+                    extra={
+                        'status_code': e.code,
+                        'redirect_location': e.headers.get('Location'),
+                        'url': req.full_url
+                    }
+                )
+                raise
             logger.error(f"Static proxy HTTP error: {e.code} - {e.reason}")
             raise
         except urllib.error.URLError as e:
