@@ -16,6 +16,8 @@
 # limitations under the License.
 #
 import logging
+import json
+import urllib.parse
 from flask import Flask, request, Response
 import proxypy
 from logging_config import setup_logging
@@ -54,6 +56,60 @@ def crossdomain_handler():
         # Return error response
         error_reply = '{"status": {"http_code": 500, "reason": "Internal server error"}, "content": null}'
         return Response(error_reply, content_type='application/json', status=500)
+
+
+@app.route('/gotlib/proxy')
+def gotlib_proxy_handler():
+    target_url = request.args.get('url')
+
+    if not target_url:
+        return Response('Missing url parameter', status=400)
+
+    if 'encore.gotlib.goteborg.se' not in target_url:
+        return Response('Unsupported target for Göteborg proxy', status=400)
+
+    logger.info('Göteborg proxy request received', extra={
+        'event': 'gotlib_proxy_request',
+        'target_url': target_url,
+        'remote_addr': request.remote_addr,
+        'user_agent': request.headers.get('User-Agent')
+    })
+
+    query = urllib.parse.urlencode({'url': target_url})
+
+    try:
+        proxy_response = proxypy.get(query)
+        data = json.loads(proxy_response)
+
+        status = data.get('status', {})
+        http_code = status.get('http_code', 500) or 500
+
+        if http_code != 200 or not data.get('content'):
+            reason = status.get('reason', 'Göteborg proxy fetch failed')
+            logger.error('Göteborg proxy failed', extra={
+                'event': 'gotlib_proxy_error',
+                'target_url': target_url,
+                'status_code': http_code,
+                'reason': reason
+            })
+            return Response(f'Failed to fetch Göteborg content ({reason})', status=http_code)
+
+        logger.info('Göteborg proxy succeeded', extra={
+            'event': 'gotlib_proxy_success',
+            'target_url': target_url,
+            'resolved_url': status.get('resolved_url')
+        })
+
+        return Response(data['content'], content_type='text/html; charset=utf-8')
+
+    except Exception as e:
+        logger.error('Göteborg proxy unexpected failure', extra={
+            'event': 'gotlib_proxy_exception',
+            'target_url': target_url,
+            'error_type': type(e).__name__,
+            'error_message': str(e)
+        }, exc_info=True)
+        return Response('Göteborg proxy encountered an error', status=500)
 
 if __name__ == '__main__':
     # For local testing

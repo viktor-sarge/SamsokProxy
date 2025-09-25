@@ -198,11 +198,13 @@ def get(qstring):
                                 for header_name, header_value in headers.items():
                                     follow_req.add_header(header_name, header_value)
 
-                                return static_proxy.make_request(
+                                response = static_proxy.make_request(
                                     follow_req,
                                     timeout=20,
                                     cookie_jar=cj
                                 )
+                                response.resolved_url = target_url
+                                return response
 
                             # No CAS target in redirect – treat as intermediate hop (e.g., http -> https)
                             current_url = resolved_location
@@ -213,11 +215,13 @@ def get(qstring):
                     for header_name, header_value in headers.items():
                         follow_req.add_header(header_name, header_value)
 
-                    return static_proxy.make_request(
+                    response = static_proxy.make_request(
                         follow_req,
                         timeout=20,
                         cookie_jar=cj
                     )
+                    response.resolved_url = current_url
+                    return response
 
                 gotlib_domain = 'gotlib.goteborg.se'
 
@@ -255,6 +259,10 @@ def get(qstring):
                 # Make the request normally for non-blocked domains
                 response = opener.open(req, timeout=20)
             
+            resolved_url = response.geturl() if hasattr(response, 'geturl') else url
+            if hasattr(response, 'resolved_url') and response.resolved_url:
+                resolved_url = response.resolved_url
+
             # Read the raw response
             raw_content = response.read()
             content_encoding = response.headers.get('content-encoding')
@@ -285,6 +293,7 @@ def get(qstring):
             
             reply["content"] = content
             reply["status"]["http_code"] = response.code
+            reply["status"]["resolved_url"] = resolved_url
 
             # Return response headers if requested
             if "headers" in args and args["headers"] == "true":
